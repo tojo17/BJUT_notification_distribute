@@ -2,20 +2,26 @@
 # coding=utf-8
 import requests
 from lxml import etree
+from newspaper import fulltext
+from newspaper import Article
 import sqlite3
 import re
 import sys
 import time
 import json
+import userinfo
 
-debug = True
+debug = False
+ex_log = False
+token = {'token': '0', 'time': 0, 'expire': 0}
+
 def retry_get(retry, session, h_url, **kwargs):
 	ctTry = 0
 	global debug
 	while 1:
 		try:
 			print_debug("retry_get", ctTry)
-			res = session.get(h_url, timeout=30, verify = debug, **kwargs)
+			res = session.get(h_url, timeout=30, verify = not debug, **kwargs)
 		except:
 			if ctTry < retry:
 				ctTry += 1
@@ -36,7 +42,7 @@ def retry_post(retry, session, h_url, **kwargs):
 	while 1:
 		try:
 			print_debug("retry_post", ctTry)
-			res = session.post(h_url, timeout=30, verify = debug, **kwargs)
+			res = session.post(h_url, timeout=30, verify = not debug, **kwargs)
 		except:
 			if ctTry < retry:
 				ctTry += 1
@@ -62,30 +68,16 @@ def print_debug(*text):
 	return
 
 def init_db():
-    global conn
-    conn = sqlite3.connect("webdata.db")
-    log_out("DB link success.")
-    c = conn.cursor()
-    if not ex_append:
-        data = c.execute('SELECT name FROM sqlite_master;')
-        for row in data:
-            print(row)
-            if (row[0] != 'sqlite_sequence'):
-                c.execute('DROP TABLE %s;' %row[0])
-            else:
-                c.execute('DELETE FROM %s;' %row[0])
+	global conn
+	conn = sqlite3.connect("noti.db")
+	print_log("DB link success.")
 
-        c.execute('''
-            CREATE TABLE sites (
-                id          INTEGER NOT NULL    PRIMARY KEY AUTOINCREMENT   UNIQUE,
-                name        TEXT    NOT NULL,
-                url         TEXT,
-                country     TEXT,
-                category    TEXT,
-                description TEXT
-            );
-        ''')
-        conn.commit()
+def write_db(noti):
+	print_log("Write into DB")
+	conn.cursor().execute('INSERT INTO institute (title, url, publisher, publish_time, content)\
+		VALUES (?, ?, ?, ?, ?)',\
+		(noti['title'], noti['url'], noti['publisher'], noti['publish_time'], noti['content']))
+	conn.commit()
 
 def login(user, password):
 	global session
@@ -95,8 +87,8 @@ def login(user, password):
 	session = requests.session()
 	res = retry_get(30, session, url)
 	etr = etree.HTML(res.text)
-	lt = etr.xpath('////div[@class="form-group  dl-btn"]/input[@name="lt"]/@value')[0]
-	execution = etr.xpath('////div[@class="form-group  dl-btn"]/input[@name="execution"]/@value')[0]
+	lt = etr.xpath('//div[@class="form-group  dl-btn"]/input[@name="lt"]/@value')[0]
+	execution = etr.xpath('//div[@class="form-group  dl-btn"]/input[@name="execution"]/@value')[0]
 	# login
 	data = {
 		'username':	user,
@@ -127,15 +119,132 @@ def get_institute_noti():
 		'iDisplayLength': 10,
 		'sSearch': ''
 	}
-	json = retry_get(30, session, url, params = params).text
-	return json
+	jstr = retry_get(30, session, url, params = params).text
+	return jstr
+
+def analyse_noti(jstr):
+	print_log("Analysing...")
+	# bulletin link base url
+	s_url = 'https://my1.bjut.edu.cn/group/undergraduate/index?p_p_id=bulletinListForCustom_WAR_infoDiffusionV2portlet_INSTANCE_O5zYIiq6Mmwb&p_p_lifecycle=0&p_p_state=pop_up&p_p_mode=view&_bulletinListForCustom_WAR_infoDiffusionV2portlet_INSTANCE_O5zYIiq6Mmwb_action=browse&wid='
+	jnoti = json.loads(jstr)
+	for item in jnoti['aaData']:
+		noti = {}
+		etr = etree.HTML(item['title'])
+		noti['title'] = etr.xpath('//a/text()')[0]
+		url = etr.xpath('//a/@href')[0]
+		if url == 'javascript:void(0);' :
+			# bulletin link
+			noti['url'] = s_url + etr.xpath('//a/@onclick')[0][16:-3]
+		else:
+			noti['url'] = url
+		noti['publisher'] = item['publis_dept']
+		noti['publish_time'] = item['published']
+		if not check_noti_exist(noti):
+			# if new noti
+			print_log("Got new Noti!")
+			get_noti_detail(noti)
+			write_db(noti)
+		# 	push_notify(noti)
+
+def get_noti_detail(noti):
+	global session
+	print_log("Getting noti text")
+	html = retry_get(30, session, noti['url']).text
+	try:
+		text = fulltext(html, language='zh')
+	except:
+		# hard to parse, maybe utf-8
+		try:
+			article = Article(noti['url'], language='zh')
+			article.download()
+			article.parse()
+			text = article.text
+		except:
+			# unable to parse main text
+			text = html
+	noti['content'] = text
+
+def check_noti_exist(noti):
+	qstr = 'SELECT * from institute where url = "%s"' % noti['url']
+	r = conn.cursor().execute(qstr).fetchall()
+	if len(r) == 0:
+		return False
+	else:
+		return True
+
+
+def push_notify(noti):
+	global token
+	session = requests.Session()
+	# if expired, get new token and save
+	if time.time() >= token['time'] + token['expire']:
+		print_log("Requireing new token...")
+		t_url = "https://api.weixin.qq.com/cgi-bin/token"
+		t_params = {
+			'grant_type': 'client_credential',
+			'appid': userinfo.appid,
+			'secret': userinfo.appsecret
+		}
+		r = retry_get(30, session, t_url,  params=t_params)
+		r_token = json.loads(r.text)
+		token['token'] = r_token['access_token']
+		token['time'] = time.time()
+		token['expire'] = r_token['expires_in']
+		print_log(token)
+		with open('token.json', 'w') as f_json:
+			json.dump(token, f_json)
+
+	p_url = "https://api.weixin.qq.com/cgi-bin/message/template/send"
+	p_params = {
+		'access_token': token['token']
+	}
+	p_msg = {
+		'touser': userinfo.wechatid,
+		'template_id': userinfo.templeid,
+		'url': noti['url'],
+		'topcolor': '#3B74AC',
+		'data': {
+			'title': {
+				'value': noti['title'],
+				'color': '#ff0000'
+			},
+			'publisher': {
+				'value': noti['publisher'],
+				'color': '#173177'
+			},
+			'publish_time': {
+				'value': noti['publish_time'],
+				'color': '#173177'
+			},
+			'url': {
+				'value': noti['url'],
+				'color': '#173177'
+			},
+			'content': {
+				'value': noti['content'],
+				'color': '#173177'
+			}
+		}
+	}
+	p_data = json.dumps(p_msg)
+	r = retry_post(3, session, p_url, params=p_params, data=p_data)
+	print_log(course)
+	print_log(r.text)
 
 if __name__ == '__main__':
 	# wait for another self to exit
 	# time.sleep(20)
-	while not login('15071025', 'cixi19344243'):
-		pass
-	json = get_institute_noti()
+	init_db()
+	while 1:
+		while not login('15071025', 'cixi19344243'):
+			pass
+		jstr = get_institute_noti()
+		analyse_noti(jstr)
+		
+		
 
+		# check every 5 minutes
+		time.sleep(300)
+	conn.close()
 
 
