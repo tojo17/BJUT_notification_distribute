@@ -141,10 +141,10 @@ def analyse_noti(jstr):
 		noti['publish_time'] = item['published']
 		if not check_noti_exist(noti):
 			# if new noti
-			print_log("Got new Noti!")
+			print_log("Got new Noti!", noti['title'])
 			get_noti_detail(noti)
 			write_db(noti)
-		# 	push_notify(noti)
+			push_notify(noti)
 
 def get_noti_detail(noti):
 	global session
@@ -236,13 +236,10 @@ if __name__ == '__main__':
 	# time.sleep(20)
 	init_db()
 	while 1:
-		while not login('15071025', 'cixi19344243'):
+		while not login(userinfo.usr, userinfo.pwd):
 			pass
 		jstr = get_institute_noti()
 		analyse_noti(jstr)
-		
-		
-
 		# check every 5 minutes
 		time.sleep(300)
 	conn.close()
