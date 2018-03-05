@@ -228,7 +228,7 @@ def push_notify(noti):
 	}
 	p_data = json.dumps(p_msg)
 	r = retry_post(3, session, p_url, params=p_params, data=p_data)
-	print_log(course)
+	print_log(noti)
 	print_log(r.text)
 
 if __name__ == '__main__':
