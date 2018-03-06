@@ -1,6 +1,8 @@
 # BJUT_notification_distribute
 BJUT notification (my.bjut.edu.cn) distributer
 Check and push notification to WeChat  
+https://github.com/SykieChen/BJUT_notification_distribute/wiki  
+
 Require:  
 - Python 3.x  
 - requests  
